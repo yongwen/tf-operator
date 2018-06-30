@@ -3,7 +3,16 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
+	"encoding/json"
+	"bufio"
+
+	"github.com/aws/aws-sdk-go/aws"
+    "github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 
 	"github.com/emicklei/go-restful"
 	log "github.com/golang/glog"
@@ -12,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kubeflow/tf-operator/dashboard/backend/client"
-	"github.com/kubeflow/tf-operator/pkg/apis/tensorflow/v1alpha2"
+	"github.com/kubeflow/tf-operator/pkg/apis/tensorflow/v1alpha1"
 )
 
 // APIHandler handles the API calls
@@ -23,18 +32,24 @@ type APIHandler struct {
 // TFJobDetail describe the specification of a TFJob
 // if any and related pods
 type TFJobDetail struct {
-	TFJob *v1alpha2.TFJob `json:"tfJob"`
+	TFJob *v1alpha1.TFJob `json:"tfJob"`
 	Pods  []v1.Pod        `json:"pods"`
 }
 
 // TFJobList is a list of TFJobs
 type TFJobList struct {
-	TFJobs []v1alpha2.TFJob `json:"TFJobs"`
+	TFJobs []v1alpha1.TFJob `json:"TFJobs"`
 }
 
 // NamespaceList is a list of namespaces
 type NamespaceList struct {
 	Namespaces []v1.Namespace `json:"Namespaces"`
+}
+
+type ContainerLog struct {
+    Log  string `json:"log"`
+	Stream string `json:"stream"`
+	Time string `json:"time"`
 }
 
 // CreateHTTPAPIHandler creates the restful Container and defines the routes the API will serve
@@ -93,8 +108,8 @@ func CreateHTTPAPIHandler(client client.ClientManager) (http.Handler, error) {
 	apiV1Ws.Route(
 		apiV1Ws.POST("/tfjob").
 			To(apiHandler.handleDeploy).
-			Reads(v1alpha2.TFJob{}).
-			Writes(v1alpha2.TFJob{}))
+			Reads(v1alpha1.TFJob{}).
+			Writes(v1alpha1.TFJob{}))
 
 	apiV1Ws.Route(
 		apiV1Ws.DELETE("/tfjob/{namespace}/{tfjob}").
@@ -116,7 +131,7 @@ func CreateHTTPAPIHandler(client client.ClientManager) (http.Handler, error) {
 
 func (apiHandler *APIHandler) handleGetTFJobs(request *restful.Request, response *restful.Response) {
 	namespace := request.PathParameter("namespace")
-	jobs, err := apiHandler.cManager.TFJobClient.KubeflowV1alpha2().TFJobs(namespace).List(metav1.ListOptions{})
+	jobs, err := apiHandler.cManager.TFJobClient.KubeflowV1alpha1().TFJobs(namespace).List(metav1.ListOptions{})
 
 	ns := "all"
 	if namespace != "" {
@@ -138,7 +153,7 @@ func (apiHandler *APIHandler) handleGetTFJobs(request *restful.Request, response
 func (apiHandler *APIHandler) handleGetTFJobDetail(request *restful.Request, response *restful.Response) {
 	namespace := request.PathParameter("namespace")
 	name := request.PathParameter("tfjob")
-	job, err := apiHandler.cManager.TFJobClient.KubeflowV1alpha2().TFJobs(namespace).Get(name, metav1.GetOptions{})
+	job, err := apiHandler.cManager.TFJobClient.KubeflowV1alpha1().TFJobs(namespace).Get(name, metav1.GetOptions{})
 	if err != nil {
 		log.Infof("cannot find TFJob %v under namespace %v, error: %v", name, namespace, err)
 		if errors.IsNotFound(err) {
@@ -159,7 +174,7 @@ func (apiHandler *APIHandler) handleGetTFJobDetail(request *restful.Request, res
 
 	// Get associated pods
 	pods, err := apiHandler.cManager.ClientSet.CoreV1().Pods(namespace).List(metav1.ListOptions{
-	// LabelSelector: fmt.Sprintf("kubeflow.org=,runtime_id=%s", job.Spec.RuntimeId),
+		LabelSelector: fmt.Sprintf("kubeflow.org=,runtime_id=%s", job.Spec.RuntimeId),
 	})
 	if err != nil {
 		log.Warningf("failed to list pods for TFJob %v under namespace %v: %v", name, namespace, err)
@@ -177,7 +192,7 @@ func (apiHandler *APIHandler) handleGetTFJobDetail(request *restful.Request, res
 
 func (apiHandler *APIHandler) handleDeploy(request *restful.Request, response *restful.Response) {
 	clt := apiHandler.cManager.TFJobClient
-	tfJob := new(v1alpha2.TFJob)
+	tfJob := new(v1alpha1.TFJob)
 	if err := request.ReadEntity(tfJob); err != nil {
 		if err2 := response.WriteError(http.StatusBadRequest, err); err2 != nil {
 			log.Errorf("Failed to write response: %v", err2)
@@ -203,7 +218,7 @@ func (apiHandler *APIHandler) handleDeploy(request *restful.Request, response *r
 		}
 	}
 
-	j, err := clt.KubeflowV1alpha2().TFJobs(tfJob.Namespace).Create(tfJob)
+	j, err := clt.KubeflowV1alpha1().TFJobs(tfJob.Namespace).Create(tfJob)
 	if err != nil {
 		log.Warningf("failed to deploy TFJob %v under namespace %v: %v", tfJob.Name, tfJob.Namespace, err)
 		if err2 := response.WriteError(http.StatusInternalServerError, err); err2 != nil {
@@ -221,7 +236,7 @@ func (apiHandler *APIHandler) handleDeleteTFJob(request *restful.Request, respon
 	namespace := request.PathParameter("namespace")
 	name := request.PathParameter("tfjob")
 	clt := apiHandler.cManager.TFJobClient
-	err := clt.KubeflowV1alpha2().TFJobs(namespace).Delete(name, &metav1.DeleteOptions{})
+	err := clt.KubeflowV1alpha1().TFJobs(namespace).Delete(name, &metav1.DeleteOptions{})
 	if err != nil {
 		log.Warningf("failed to delete TFJob %v under namespace %v: %v", name, namespace, err)
 		if err2 := response.WriteError(http.StatusInternalServerError, err); err2 != nil {
@@ -236,16 +251,66 @@ func (apiHandler *APIHandler) handleDeleteTFJob(request *restful.Request, respon
 func (apiHandler *APIHandler) handleGetPodLogs(request *restful.Request, response *restful.Response) {
 	namespace := request.PathParameter("namespace")
 	name := request.PathParameter("podname")
-	logs, err := apiHandler.cManager.ClientSet.CoreV1().Pods(namespace).GetLogs(name, &v1.PodLogOptions{}).Do().Raw()
-	if err != nil {
-		log.Warningf("failed to get pod logs for TFJob %v under namespace %v: %v", name, namespace, err)
-		if err2 := response.WriteError(http.StatusInternalServerError, err); err2 != nil {
-			log.Errorf("Failed to write response: %v", err2)
+	s3Key := strings.Replace(name, "__", "/", -1)
+
+	if namespace == "s3_log" {
+		svc := s3.New(session.New(), &aws.Config{
+			Region: aws.String("us-east-1"),
+		})
+
+		input := &s3.GetObjectInput{
+			Bucket: aws.String("pinlogs"),
+			Key:    aws.String("tfjobs/"+s3Key+".log"),
+		}
+		
+		s3ouput, err := svc.GetObject(input)
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				case s3.ErrCodeNoSuchKey:
+					log.Warningf("failed to get s3 log %v, error code: %v, error: %v", s3Key, s3.ErrCodeNoSuchKey, aerr.Error())
+				default:
+					log.Warningf("failed to get s3 log %v, error: %v", s3Key, aerr.Error())
+				}
+			} else {
+				// Print the error, cast err to awserr.Error to get the Code and
+				// Message from an error.
+				log.Warningf("failed to get s3 log %v, other error: %v", s3Key, err.Error())
+			}
+		} else { 		
+			log.Infof("successfully get s3 log %v for TFJob %v", s3Key, name)
+			scanner := bufio.NewScanner(s3ouput.Body)
+			var logs []string
+			for scanner.Scan() {
+				line := scanner.Text()
+
+				var containerLog ContainerLog
+				err := json.NewDecoder(strings.NewReader(line)).Decode(&containerLog)
+				if err != nil {
+					log.Warningf("error decoding from s3 container log, %v", err)
+				}
+				logs = append(logs, containerLog.Log)
+			}
+			if err := scanner.Err(); err != nil {
+				log.Warningf("error reading from s3 stream, %v", err)
+			}
+			if err = response.WriteHeaderAndEntity(http.StatusOK, strings.Join(logs, "")); err != nil {
+				log.Errorf("Failed to write response: %v", err)
+			}
 		}
 	} else {
-		log.Infof("successfully get pod logs for TFJob %v under namespace %v", name, namespace)
-		if err = response.WriteHeaderAndEntity(http.StatusOK, string(logs)); err != nil {
-			log.Errorf("Failed to write response: %v", err)
+		logs, err := apiHandler.cManager.ClientSet.CoreV1().Pods(namespace).GetLogs(name, 
+			&v1.PodLogOptions{Container: "tensorflow",}).Do().Raw()
+		if err != nil {
+			log.Warningf("failed to get pod logs for TFJob %v under namespace %v: %v", name, namespace, err)
+			if err2 := response.WriteError(http.StatusInternalServerError, err); err2 != nil {
+				log.Errorf("Failed to write response: %v", err2)
+			}
+		} else {
+			log.Infof("successfully get pod logs for TFJob %v under namespace %v", name, namespace)
+			if err = response.WriteHeaderAndEntity(http.StatusOK, string(logs)); err != nil {
+				log.Errorf("Failed to write response: %v", err)
+			}
 		}
 	}
 }

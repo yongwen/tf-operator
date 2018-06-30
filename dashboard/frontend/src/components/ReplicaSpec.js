@@ -4,7 +4,7 @@ import InfoEntry from "./InfoEntry";
 import { Card, CardText, CardHeader } from "material-ui/Card";
 import PodList from "./PodList";
 
-const ReplicaSpec = ({ replicaType, spec, pods }) => {
+const ReplicaSpec = ({ name, spec, status, pods }) => {
   return (
     <Card>
       <CardHeader
@@ -17,14 +17,15 @@ const ReplicaSpec = ({ replicaType, spec, pods }) => {
           name="Image"
           value={spec.template.spec.containers[0].image}
         />
-        {/* <InfoEntry name="State" value={status.state} /> */}
-        <PodList pods={pods} />
+        <InfoEntry name="State" value={status.state} />
+        <PodList pods={pods} name={name} type={spec.tfReplicaType} count={spec.replicas}/>
       </CardText>
     </Card>
   );
 };
 
 ReplicaSpec.propTypes = {
+  name: PropTypes.object.isRequired,
   spec: PropTypes.object.isRequired,
   status: PropTypes.object.isRequired,
   pods: PropTypes.arrayOf(PropTypes.object).isRequired

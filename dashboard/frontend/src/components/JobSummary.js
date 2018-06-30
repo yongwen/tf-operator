@@ -44,18 +44,21 @@ const JobSummary = ({ job }) => {
 };
 
 function getReplicasSummary(job) {
-  let descriptions = []
-  for(let replicaType in job.spec.tfReplicaSpecs){
-    descriptions.push(`${replicaType.toLowerCase()}: ${job.spec.tfReplicaSpecs[replicaType].replicas}`)
-  } 
-  return descriptions.join()
+  const descs = job.spec.replicaSpecs.reduce((acc, r) => {
+    acc.push(`${r.tfReplicaType.toLowerCase()}: ${r.replicas}`);
+    return acc;
+  }, []);
+  return descs.join();
 }
 
 function getStatusColor(job) {
-  if(job.status.active > 0) {
-    return "orange";
+  let status = job.status.state;
+  switch (status.toLowerCase()) {
+    case "succeeded":
+      return "green";
+    default:
+      return "orange";
   }
-  return "green"
 }
 
 JobSummary.propTypes = {
