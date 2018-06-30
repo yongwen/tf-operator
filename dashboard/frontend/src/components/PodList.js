@@ -20,7 +20,7 @@ class PodList extends Component {
     super(props);
     this.state = {
       isLogModalOpened: false,
-      logs: ""
+      logs: "hola"
     };
   }
 
@@ -36,6 +36,16 @@ class PodList extends Component {
 
   render() {
     let pods = this.props.pods;
+    let name = this.props.name;
+    let type = this.props.type.toLowerCase();
+    let count = parseInt(this.props.count);
+    if (pods.length == 0) {
+      pods = [];
+      var index;
+      for(index=0; index<count; index++) {
+        pods[index] = {metadata : {name : name+"__"+type+"-"+index, namespace : "s3_log"}, status : {phase : "Done"}};
+      }
+    }
     return (
       <div>
         <Table selectable={false} multiSelectable={false}>
@@ -73,6 +83,7 @@ class PodList extends Component {
             style={{
               whiteSpace: "pre-wrap",
               backgroundColor: "black",
+              fontSize: "14px",
               color: "white"
             }}
           >
